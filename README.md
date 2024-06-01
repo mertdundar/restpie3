@@ -11,7 +11,9 @@ Open sourced on Sep 2018 after years of production use at multiple sites.
 
 Update Sep 2020: Run in Raspberry with an SQLite database.
 
-Update May 2023: Python and libraries updated to recent versions. Python 3.11 in use. Still a fine foundation for a new project - the architecture does not age, and simple outlives complex.
+Update May 2023: Python and libraries updated, Python 3.11 into use. Still a fine foundation for a new project - the architecture does not age, and simple outlives complex.
+
+Update March 2024: Ansible scripts for automatic install to cloud.
 
 **Table of contents**
 
@@ -28,9 +30,7 @@ Update May 2023: Python and libraries updated to recent versions. Python 3.11 in
 * [Mules: extra servers](#mules)
 * [Logging](#logging)
 * [Tests](#tests)
-* [Deploy to VPS](#deploy-to-vps)
-* [Setup VPS server](#setup-vps-server)
-* [Nginx](#nginx)
+* [Deploy to cloud](#deploy-to-cloud)
 * [Security](#security)
 * [Scaling up](#scaling-up)
 * [Run in Raspberry](#run-in-raspberry)
@@ -148,12 +148,15 @@ Source files
 The whole of this server fits into a small set of files:
 
 ```
+├── /ansible/               # ansible files for automated cloud install
 ├── /conf/                  # configuration files
+│   ├── /caddy.conf         #   config for Caddy www proxy that ansible setups
 │   ├── /favicon.ico        #   site icon
 │   ├── /loginscript.sh     #   docker shell login script, sets paths
-│   ├── /pydaemon.service   #   systemd daemon config (if you run in a VPS)
+│   ├── /pydaemon.service   #   systemd daemon config
 │   ├── /robots.txt         #   deny all from robots
-│   ├── /server-config.json #   main server config: db, redis, etc
+│   ├── /server-config-localdev.json #   main server config for localdev in docker
+│   ├── /server-config.json #   main server config, ansible fills and copies to cloud
 │   └── /uwsgi.ini          #   uwsgi daemon config, for localdev & server
 ├── /migrations/            # db migrations - postgresql
 │   ├── /001_users.py       #   users table, the foundation
@@ -185,11 +188,11 @@ The whole of this server fits into a small set of files:
 │   ├── /test_api.py        #   test API methods
 │   ├── /test_redis.py      #   test redis module
 │   └── /sample.log.txt     #   sample logging output from api test
+├── /www/                   # static files for Caddy
 ├── build.sh                # build Docker image in dev mode
 ├── Dockerfile              # docker image config
-├── fabfile.py              # automation tasks: rsync deploy, migrations
 ├── requirements.txt        # python 3rd party dependencies
-├── rsync.sh                # rsync sources to server and reload (instead of fabfile)
+├── rsync.sh                # rsync sources to server and reload (instead of ansible)
 ├── run.sh                  # run server locally with Docker in dev mode
 └── shell.sh                # run interactive shell inside docker instance
 ```
@@ -211,17 +214,13 @@ So how do you get started with your own project? I suggest to take this route:
 Run locally with Docker
 -----------------------
 
-The fastest and easiest way to test drive RESTPie3 on your machine is to use
-[Docker](https://www.docker.com/). The server fully supports Docker - the
-Docker image is created with this [Dockerfile](Dockerfile).
-
+RESTPie3 is easy to run locally via Docker.
 The base image is an [official python image](https://hub.docker.com/_/python)
-variant **python:3.9-slim-buster**, a recent and small Debian.
+variant **python:3.11-slim-bullseye**.
 
 If you already have Docker installed, the quick steps to run RESTPie3 with
 SQLite and Redis are:
 
-    # download latest redis version 5.x
     docker pull redis:5
 
     # create + start the redis instance
@@ -239,7 +238,7 @@ SQLite and Redis are:
     docker exec -it restpie-dev bash -l -c 'python /app/scripts/dbmigrate.py'
 
 
-If all went OK, RESTPie3 + Redis are running and you should be able to list
+If all went OK, RESTPie3, SQLite and Redis are running and you should be able to list
 the REST API at http://localhost:8100/api/list
 
 The SQLite database is empty at this point so empty lists are returned from
@@ -251,17 +250,16 @@ uses curl to do a signup and insert a new movie in the database:
 
 For a serious setup you want to have full PostgreSQL. Do the setup like this:
 
-    # download latest postgresql version 12.x
-    docker pull postgres:12
+    docker pull postgres:15
 
     # create + start a postgres instance - use your own db + password!
-    # the params here must match the ones in conf/server-config.json
+    # the params here must match the ones in conf/server-config-localdev.json
     docker run -d --name pos-restpie -p 5432:5432 -e POSTGRES_DB=tmdb -e POSTGRES_USER=tm -e POSTGRES_PASSWORD=MY_PASSWORD postgres:12
 
     # activate the uuid extension
     docker exec -it pos-restpie psql -U tm -d tmdb -c 'create extension "uuid-ossp"'
 
-    # and then in server-config.json
+    # and then in server-config-localdev.json
     # set PYSRV_DATABASE_HOST (see PYSRV_DATABASE_HOST_POSTGRESQL)
 
 To start and stop these docker instances, invoke:
@@ -273,10 +271,6 @@ To start and stop these docker instances, invoke:
     docker stop pos-restpie
     docker stop restpie-dev
 
-If you don't want to use docker, you can install Redis, PostgreSQL, python3
-and the required python libs on your local machine too. On OSX,
-[Homebrew](https://brew.sh/) is a good installation tool. These steps are not
-documented here, but it's not that hard.
 
 
 Develop locally with Docker
@@ -639,146 +633,44 @@ Run tests inside the DEV instance:
     docker exec -it restpie-dev bash -l -c 'python /app/test/test_redis.py'
 
 
-Deploy to Linux server running Docker
--------------------------------------
+Deploy to Cloud
+---------------
 
-To be written. Docker compose, rsync+reload script etc.
+There are endless ways to deploy server software to cloud, X amount of tools and Y amount of different kinds of online services. For an early startup or for a hobby project my advice is this: start small and easy - buy a cheap virtual private server, VPS, or a few of them, from a big or a small cloud vendor and run your backend services there. Have control of your infra. Have simple scripts to automate things. Then automate more via Github Actions and so on. There is time later to grow your infra if you get past product-market-fit challenges and actually enjoy a bigger business.
 
+[Ansible](https://www.ansible.com/) is one of the best lightweigt tools to automate infra tasks. It simply runs commands over the SSH against all your servers.
 
-Deploy to VPS
--------------
+I have prepared Ansible scripts to setup RESTPie3 quickly on a Linux server(s). These steps have been verified to work with Debian 12.5 "bookworm".
 
-Even though the world is crazy about Docker, I still often like to deploy code
-directly and quickly to VPS servers, especially during project start and early
-development. Setting up the components and the environment at server requires
-some initial effort but you then have absolute control and visibility to
-the whole server. Not every project needs a big cluster first.
+The scripts setup Redis + PostgreSQL + RESTPie3 + Caddy on your server(s). [Caddy](https://caddyserver.com) is a solid and simple www server written in Go that can run as a proxy in front of uwsgi.
 
-Setting up a whole cluster at [AWS ECS](https://aws.amazon.com/ecs/) is no
-easy feat, you need to learn and configure A LOT.
-[Dokku](http://dokku.viewdocs.io/dokku/) seems nice but has limitations,
-allowing to run only a single Docker image. I wish the container/Kubernetes industry still matures more and provides a
-[Heroku](https://www.heroku.com/)-like effortless deployments of Docker
-images.
+Prerequisites:
+- Have a root ssh access to your server(s) via ssh publickey, and use ssh-agent to store your private key so you don't have to type the passphare all the time. After setup you should disable server root access.
+- Update your server to the latest versions: `apt update & apt upgrade`
+- Locally create a new ssh-key for the user-level Linux account that is later used for deploys
+  `ssh-keygen -t rsa -f ~/.ssh/id_myapp -C 'restpie3 deploy account'`
+- If you run OSX, update local rsync to latest 3.x: `brew install rsync`
+- Install Ansible tools and extensions locally (OSX: `brew install ansible`)
+- Put your desired config/secrets into [vars.yml](ansible/vars.yml) Note: do NOT commit secrets into git! Move this file elsewhere or put into `.gitignore`
+- Write the IP-address or domain name of your server into [myhosts.ini](ansible/myhosts.ini). If you have multiple servers, write them all here.
 
-So if you have plain VPS servers, and want to have super speedy updates from
-localhost to the servers, I have created a single Python script
-[fabfile.py](fabfile.py) that automates the deployment. It relies on [Fabric tool](http://www.fabfile.org/) that rsyncs the source code securely over SSH.
+Then run these scripts:
 
-The deployment is activated just with:
+    cd restpie3/ansible/
+    ansible-playbook -i myhosts.ini install-redis.yaml
+    ansible-playbook -i myhosts.ini install-caddy.yaml
+    ansible-playbook -i myhosts.ini install-db.yaml
+    ansible-playbook -i myhosts.ini install-app.yaml
 
-    fab deploy
+Now you should have a running RESTPie3 at the server you configured. Point your browser there. You should see text `RESTPie3 setup works!`
 
-This transfers only the changed source files from localhost to a server,
-performs database migrations and restarts the Python server. All in just
-4 seconds. This makes the core dev/test loop really fast.
+Your code updates from local machine to server can be deployed with:
 
-You can also ignore fabfile.py and just run ./rsync.sh.
+    ansible-playbook -i myhosts.ini deploy.yaml
 
-In any case, this is just an optional script. If you have a big environment,
-you most likely have a Continous Integration / Deployment solution in place.
+Later you might want to run this script from Github Action to have consistent automation.
 
-
-Setup VPS server
-----------------
-
-Here are rough steps about how to setup a VPS server for this Python server.
-This is not a tutorial, I assume you know Linux and SSH basics.
-
-During the development of this project I used latest Ubuntu 18.04 myself.
-These steps should work for Ubuntu. Steps will vary depending on your OS and
-version. Python3.x comes pre-installed in recent Ubuntus.
-
-Install PostgreSQL and Redis at server:
-
-    sudo apt-get update
-    sudo apt-get install redis-server
-    sudo apt-get install postgresql
-    sudo apt-get install python3-pip
-    sudo apt-get install rsync (on Debian)
-    mkdir /app/
-
-Redis does not require more setup. For PostgreSQL, create the database and
-the user: (pick your own names and secrets for the capital parts!)
-
-    sudo su - postgres
-    createuser MY_USER
-    createdb -O tm MY_DATABASE
-    psql MY_DATABASE
-    alter user MY_USER with encrypted password 'MY_PASSWORD';
-    create extension if not exists "uuid-ossp";
-
-Write the IP-address or server name locally in your fabfile.py as
-TEST_SERVER. Plus add your SSH credentials and a path to your public key.
-Then transfer source files to the server, and install the
-[systemd daemon](conf/pydaemon.service):
-
-    # locally
-    fab deploy
-    fab deploy_mydaemon
-
-Install Python libraries:
-
-    sudo pip3 install -r /app/requirements.txt
-
-Edit the json config file at server, write PostgreSQL credentials:
-
-    cd /app/
-    cp conf/server-config.json real-server-config.json
-    pico /app/real-server-config.json
-
-And finally re-deploy: (does database migration, server restart)
-
-    # locally
-    fab deploy
-
-For a production setup you must also configure uwsgi to run as a lower
-privileged user and not as a root! Check the [uwsgi guide](https://uwsgi-docs.readthedocs.io/en/latest/).
-
-
-Nginx
------
-
-Few words about Nginx: if you want to run this API server and your front-end
-under the same domain, and you are using Nginx, you can have the following
-Nginx config to send all /api/ requests to Python server and other requests to
-other destinations, like to Node and file system:
-
-
-        # in nginx config:
-
-        # to python api server
-        location /api/ {
-            uwsgi_pass localhost:8010;
-            include uwsgi_params;
-            uwsgi_param  X-Real-IP  $remote_addr;
-            uwsgi_param  X-Real-Host $host;
-        }
-
-        # static files
-        location /static/ {
-            root /path/to/myfiles;
-            # note that you must have /path/to/myfiles/static/ folder,
-            # unless rewriting the url
-            try_files $uri /index.html =404;
-        }
-
-        # to Node server
-        location / {
-            proxy_pass http://localhost:8080;
-            proxy_http_version 1.1;
-            proxy_set_header Upgrade $http_upgrade;
-            proxy_set_header Connection 'upgrade';
-            proxy_set_header Host $host;
-            proxy_cache_bypass $http_upgrade;
-        }
-
-
-And then enable the uwsgi-listener in [uwsgi.ini](conf/uwsgi.ini):
-
-        # in uwsgi.ini:
-        [uwsgi-production]
-        uwsgi-socket = localhost:8010
+For a production setup you should harden the security of this simple setup with the usual steps like: create a private network behind a load balancer, disable ssh root login, carefully build access control, etc.
 
 
 Security
@@ -802,8 +694,6 @@ A few words about security practices in this software:
 * authorization is enforced via user roles and function decorator, not
   requiring complex code
 * uwsgi supports running code as a lower privileged user
-* uwsgi supports SSL certificates (but a load balancer or nginx in front is
-  recommended as SSL endpoint)
 
 Of course the overall security of the service is also heavily dependent on the
 configuration of the server infrastructure and access policies.
@@ -933,13 +823,6 @@ required in every project and it is boring to always build them from
 scratch. Only HTML and CSS is used with zero lines of Javascript.
 It is easy to start the project with them and create something fancier
 later if needed.
-
-If you want inspiration of larger front-ends, you could take a look of my two
-open-source starter kits although they are getting a bit old already. The tech
-stacks nextjs and nuxtjs are still relevant in 2021 though.
-
-* [React/Nextjs starter](https://github.com/tomimick/tm-nextjs-starter)
-* [Vue/Nuxtjs starter](https://github.com/tomimick/tm-nuxtjs-starter)
 
 
 Need help?
